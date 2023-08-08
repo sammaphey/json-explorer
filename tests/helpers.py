@@ -5,7 +5,9 @@ import sys
 
 def remove_release_candidate_versions():
     """Remove all release candidate versions from PyDarc documentation."""
-    versions = subprocess.check_output(["mike", "list", "--prefix", "public"]).decode("utf-8")
+    versions = subprocess.check_output(["mike", "list", "--prefix", "public"]).decode(
+        "utf-8"
+    )
 
     for version in versions.split("\n"):
         if "rc" in version:
