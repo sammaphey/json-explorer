@@ -1,7 +1,8 @@
-from io import BytesIO
-import streamlit as st
 import json
+from io import BytesIO
+
 import pandas as pd
+import streamlit as st
 
 from json_explorer.analyzer import Analyzer
 from json_explorer.constants import HANDLED_TYPES
@@ -14,6 +15,7 @@ if not f:
     st.stop()
 
 data = json.load(f)
+
 
 def construct_collation(analyzer: Analyzer):
     for type, fields in analyzer._value_lookup.items():
@@ -30,6 +32,7 @@ def construct_collation(analyzer: Analyzer):
                 right.warning(f"No Chart Implemented for {type}")
             except ValueError as e:
                 right.warning(e)
+
 
 analyzer = Analyzer(data=data)
 
@@ -51,4 +54,3 @@ if st.button("Analyze JSON Data..."):
     for name, sub in analyzer.sub_analyzers.items():
         with st.expander(f"Analyzed data for `{name}` fields..."):
             construct_collation(analyzer=sub)
-
