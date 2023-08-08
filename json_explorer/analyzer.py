@@ -1,5 +1,6 @@
 from __future__ import annotations
 from abc import abstractmethod
+from calendar import month
 from copy import deepcopy
 from dataclasses import dataclass, field
 from collections import defaultdict, Counter
@@ -7,8 +8,10 @@ from math import pi
 from typing import Any, Generic, Optional, TypeVar, Union
 from bokeh.models import ColumnDataSource, PanTool, HoverTool
 from bokeh.plotting import figure, Figure
+from datetime import datetime
+from dateutil.parser import isoparse
 
-from json_explorer.constants import HANDLED_TYPES
+from json_explorer.constants import HANDLED_TYPES, WEEKDAYS
 
 
 DataType = TypeVar("DataType")
@@ -106,6 +109,46 @@ f"""
         p.add_tools(PanTool(dimensions="width"))
 
         return p
+
+
+class DateAnalyzer(TypeAnalyzer[datetime]):
+
+    dates: list[datetime]
+    """A list of the translated dates."""
+
+    counts: dict[str, dict[str, int]] = field(default_factory=lambda: {})
+    """The counts of each day, month, and year combination which appear in the list of dates."""
+
+    max: datetime
+    min: datetime
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.dates = [isoparse(d["$date"]) for d in self.data]
+
+    def collate(self):
+        self.min = min(self.dates)
+        self.max = max(self.dates)
+        self.counts = {
+            "day": defaultdict(int),
+            "month": defaultdict(int),
+            "year": defaultdict(int),
+        }
+        for date in self.dates:
+            day = WEEKDAYS[date.weekday()]
+            self.counts["day"][day] += 1
+            self.counts["month"][date.month] += 1
+            self.counts["year"][date.year] += 1
+        return self
+    
+    def stats(self):
+        return super().stats() + (
+f"""
+- Max Value: {self.max:%c}
+- Min Value: {self.min:%c}
+- Date Breakdown: {self.counts}
+"""
+        )
 
 
 class BooleanAnalyzer(TypeAnalyzer[bool]):
@@ -207,25 +250,30 @@ class Analyzer:
         """Analyze the data."""
         # Construct a list of the fields present in the objects
         for key, value in self.data[0].items():
-            self._field_map[key] = type(value)
-            self._value_lookup[type(value)].append(key)
 
-            if type(value) in HANDLED_TYPES:
+            if type(value) in HANDLED_TYPES and type(value) != dict:
                 self.type_analyzer(key, type(value))
 
-            if isinstance(value, dict) and not self.parent:
-                self.sub_analyzers[key] = Analyzer(
-                    data=[d[key] for d in self.data],
-                    parent=self,
-                ).analyze()
+            if isinstance(value, dict):
+                if "$date" in value and len(value) == 1:
+                    self.type_analyzer(key, dict)
+
+                elif not self.parent:
+                    self.sub_analyzers[key] = Analyzer(
+                        data=[d[key] for d in self.data],
+                        parent=self,
+                    ).analyze()
         return self
     
     def type_analyzer(self, path: str, type: type):
+        self._field_map[path] = type
+        self._value_lookup[type].append(path)
         type_dispatch = {
             str: StringAnalyzer,
             float: NumberAnalyzer,
             int: NumberAnalyzer,
             bool: BooleanAnalyzer,
+            dict: DateAnalyzer,
         }
 
         # Get all of the values
