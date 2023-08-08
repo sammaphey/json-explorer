@@ -18,8 +18,10 @@ data = json.load(f)
 
 
 def construct_collation(analyzer: Analyzer):
-    for type in HANDLED_TYPES:
-        for key in analyzer._value_lookup.get(type, []):
+    for type, fields in analyzer._value_lookup.items():
+        if type not in HANDLED_TYPES:
+            continue
+        for key in fields:
             left, right = st.columns(2)
             analyzed = analyzer.collated[key]
             left.markdown(f"# {key}")

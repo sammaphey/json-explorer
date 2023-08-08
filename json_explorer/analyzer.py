@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import json
 from abc import abstractmethod
 from collections import Counter, defaultdict
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import datetime
 from math import pi
 from typing import Any, Generic, Optional, TypeVar, Union
 
+from bokeh.layouts import row
 from bokeh.models import ColumnDataSource, HoverTool, PanTool
 from bokeh.plotting import Figure, figure
+from dateutil.parser import isoparse
 
-from json_explorer.constants import HANDLED_TYPES
+from json_explorer.constants import (DEFAULT_DATE_FORMAT, HANDLED_TYPES,
+                                     MONTHS, WEEKDAYS)
 
 DataType = TypeVar("DataType")
 
@@ -107,6 +112,84 @@ class StringAnalyzer(TypeAnalyzer[str]):
         p.add_tools(PanTool(dimensions="width"))
 
         return p
+
+
+class DateAnalyzer(TypeAnalyzer[datetime]):
+
+    dates: list[datetime]
+    """A list of the translated dates."""
+
+    counts: dict[str, dict[str, int]] = field(default_factory=lambda: {})
+    """The counts of each day, month, and year combination which appear in the list of dates."""
+
+    max: datetime
+    min: datetime
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.dates = [isoparse(d["$date"]) for d in self.data]
+
+    def collate(self):
+        self.min = min(self.dates)
+        self.max = max(self.dates)
+        self.counts = {
+            "day": defaultdict(int),
+            "month": defaultdict(int),
+            "year": defaultdict(int),
+        }
+        for date in self.dates:
+            day = WEEKDAYS[date.weekday()]
+            month = MONTHS[date.month - 1]
+            self.counts["day"][day] += 1
+            self.counts["month"][month] += 1
+            self.counts["year"][int(date.year)] += 1
+        return self
+
+    def stats(self):
+        return super().stats() + (
+            f"""
+- Earliest Date: {self.min:%c}
+- Latest Date: {self.max:%c}
+- Yearly Breakdown: {dict(self.counts["year"])}
+"""
+        )
+
+    def chart(self, key: str) -> Figure:
+        selector_dispatch = {
+            "Weekday": (WEEKDAYS, "day"),
+            "Month": (MONTHS, "month"),
+        }
+        plots = []
+        for label, d in selector_dispatch.items():
+            group, selector = d
+
+            counts = []
+            for part in group:
+                if not self.counts[selector][part]:
+                    counts.append(0)
+                else:
+                    counts.append(self.counts[selector][part])
+            source = ColumnDataSource(data=dict(keys=group, counts=counts))
+
+            p = figure(
+                x_range=group,
+                tools=[HoverTool()],
+                tooltips="@keys, @counts",
+                title=f"{key} {label} Counts",
+                sizing_mode="stretch_width",
+            )
+            p.xaxis.major_label_orientation = pi / 4
+
+            p.vbar(
+                x="keys",
+                top="counts",
+                source=source,
+                width=0.9,
+                line_color="white",
+            )
+            plots.append(p)
+
+        return row(*plots)
 
 
 class BooleanAnalyzer(TypeAnalyzer[bool]):
@@ -208,25 +291,49 @@ class Analyzer:
         """Analyze the data."""
         # Construct a list of the fields present in the objects
         for key, value in self.data[0].items():
-            self._field_map[key] = type(value)
-            self._value_lookup[type(value)].append(key)
 
-            if type(value) in HANDLED_TYPES:
+            if type(value) in HANDLED_TYPES and type(value) != dict:
+                if type(value) == str:
+                    # See if the value could be quantified as a date
+                    try:
+                        d = datetime.strptime(value, DEFAULT_DATE_FORMAT)
+                        # Modify all values for this key into a date like format
+                        for i, item in enumerate(self.data):
+                            if isinstance(item[key], str):
+                                self.data[i][key] = {
+                                    "$date": datetime.strptime(
+                                        item[key], DEFAULT_DATE_FORMAT
+                                    ).isoformat()
+                                }
+                        self.type_analyzer(key, dict)
+                        continue
+                    except ValueError as e:
+                        if key == "created_date":
+                            print(f"got an error on {key}, {e}, {value}")
+                            print(value)
+                        pass
                 self.type_analyzer(key, type(value))
 
-            if isinstance(value, dict) and not self.parent:
-                self.sub_analyzers[key] = Analyzer(
-                    data=[d[key] for d in self.data if key in d],
-                    parent=self,
-                ).analyze()
+            if isinstance(value, dict):
+                if "$date" in value and len(value) == 1:
+                    self.type_analyzer(key, dict)
+
+                elif not self.parent:
+                    self.sub_analyzers[key] = Analyzer(
+                        data=[d[key] for d in self.data if key in d],
+                        parent=self,
+                    ).analyze()
         return self
 
     def type_analyzer(self, path: str, type: type):
+        self._field_map[path] = type
+        self._value_lookup[type].append(path)
         type_dispatch = {
             str: StringAnalyzer,
             float: NumberAnalyzer,
             int: NumberAnalyzer,
             bool: BooleanAnalyzer,
+            dict: DateAnalyzer,
         }
 
         # Get all of the values
